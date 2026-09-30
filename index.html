@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DOOM 1.10 — JS port (procedural assets)</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; height: 100%; overflow: hidden; }
+  body { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start;
+         box-sizing: border-box;
+         font-family: monospace; color: #b00; }
+  #screen { image-rendering: pixelated; image-rendering: crisp-edges; }
+  /* error line: hidden until a runtime/boot error fires (the in-canvas
+     STBAR from hud.js is the real HUD now) */
+  #hud { display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+         height: 30px; line-height: 30px; text-align: center;
+         background: #1a0000; border-top: 1px solid #400;
+         color: #f66; font-size: 16px; letter-spacing: 1px; }
+  /* game + automap side by side */
+  #stage { display: flex; flex-direction: row; align-items: stretch;
+           justify-content: center; gap: 8px; flex: 1 1 auto; min-height: 0; padding: 6px;
+           box-sizing: border-box; }
+  /* panel-open (main.js Backquote toggle mirrors this class): canvas hugs the
+     left edge, side panel absorbs all remaining horizontal space */
+  #stage.panel-open { justify-content: flex-start; }
+  #stage.panel-open #gamewrap { flex: 0 0 auto; }           /* hug the canvas width */
+  #stage.panel-open #gamewrap > #screen { margin: auto 0; } /* left-flush, still v-center */
+  #stage.panel-open #mapside { flex: 1 1 auto; min-width: 0; }
+  body { min-width: 720px; }   /* below this the page scrolls, panel never clips */
+  #gamewrap { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; }
+  #gamewrap > #screen { margin: auto; flex: 0 0 auto; }  /* margin:auto centering keeps
+              overflow reachable in both scroll directions (justify-content:center can't) */
+  /* game canvas: sized in px by main.js fitGameCanvas() to fit the wrap */
+  #screen { image-rendering: pixelated; }
+  #mapside { display: flex; flex-direction: column; flex: 0 0 280px;
+             background: #0d0d0d; border: 1px solid #300; }
+  #mapside .cap { color: #f33; font-size: 12px; text-align: center;
+                  padding: 3px 0; background: #1a0000; letter-spacing: 1px; }
+  #automap { flex: 1 1 auto; width: 100%; min-height: 0; }
+  /* vanilla cheat panel: buttons run the exact st_stuff.c ST_Responder cheat
+     bodies (idqud/idfa/kfa/noclip/behold/choppers), not new effects */
+  #cheatpanel { flex: 0 0 auto; border-top: 1px solid #300; background: #120000;
+                padding: 4px 6px 8px; margin-bottom: 6px; }
+  #cheatpanel .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+  #cheatpanel button { background: #200; border: 1px solid #611; border-radius: 3px;
+                color: #e77; font: 11px/1.3 inherit; padding: 3px 2px; cursor: pointer;
+                text-align: left; white-space: nowrap; }
+  #cheatpanel button:hover { color: #faa; border-color: #a33; background: #301010; }
+  #cheatpanel button.on { color: #8f8; border-color: #060; background: #02150a; }
+  #cheatpanel .seq { grid-column: 1 / -1; display: flex; gap: 3px; }
+  #cheatpanel .seq input { flex: 1 1 auto; min-width: 0; background: #000;
+                border: 1px solid #611; color: #e77; font: 11px monospace;
+                padding: 3px 4px; letter-spacing: 2px; text-transform: lowercase; }
+  #cheatpanel .seq input::placeholder { color: #633; letter-spacing: 0; }
+  #cheatpanel .seq button { flex: 0 0 auto; }
+  /* external debug strip under the automap: coords/angle/time live here,
+     gameplay values (health/ammo/etc.) live in the in-canvas STBAR */
+  #debugstrip { color: #d55; font-size: 11px; line-height: 1.5; text-align: left;
+                padding: 3px 6px; background: #120000; border-top: 1px solid #300;
+                white-space: pre; flex: 0 0 auto; position: relative; }
+  #copystrip { position: absolute; top: 2px; right: 4px; cursor: pointer;
+               background: none; border: 1px solid #400; border-radius: 3px;
+               color: #a66; font-size: 11px; line-height: 1; padding: 2px 4px;
+               font-family: inherit; }
+  #copystrip:hover { color: #f88; border-color: #800; }
+  #copystrip.copied { color: #8f8; border-color: #060; }
+  @media (max-width: 700px) {
+    #mapside { display: none; }
+    /* panel gone: undo the panel-open left-flush so the canvas re-centers */
+    #stage.panel-open { justify-content: center; }
+    #stage.panel-open #gamewrap { flex: 1 1 auto; }
+    #stage.panel-open #gamewrap > #screen { margin: auto; }
+  }
+</style>
+</head>
+<body>
+<div id="hud"></div>
+<div id="stage" class="panel-open">
+  <div id="gamewrap"><canvas id="screen"></canvas></div>
+  <div id="mapside">
+  <!-- WAD logo: M_DOOM (the patch above the main menu) rasterized from the
+       loaded WAD by WadInstall.logoPNG() once the WAD installs; hidden until
+       then and on WADs that somehow lack the lump -->
+  <img id="wadlogo" alt="" style="display:none; align-self:center; max-width:96%;
+       image-rendering:pixelated; margin:6px 0 8px; border:1px solid #300;">
+  <div class="cap">CHEATS</div>
+  <div id="cheatpanel">
+    <div class="grid">
+      <button id="ch-god" title="idqud — Degreelessness Mode">GOD</button>
+      <button id="ch-noclip" title="idspispopd — No Clipping">NOCLIP</button>
+      <button id="ch-idfa" title="idfa — all guns+ammo, no keys">IDFA</button>
+      <button id="ch-kfa" title="kfa — all guns+ammo+keys">KFA</button>
+      <button id="ch-choppers" title="iddt-style choppers — chainsaw + invulnerability">CHOPPERS</button>
+      <button id="ch-mus" title="play the level's theme">MUSIC</button>
+      <span class="seq">
+        <input id="ch-behold" maxlength="1" placeholder="behold: v s i r a l" spellcheck="false">
+        <button id="ch-mypos" title="idmypos — print position in the HUD message">MYPOS</button>
+        <button id="ch-reborn" title="G_InitNew restart (clev)">RESTART</button>
+      </span>
+      <span class="seq">
+        <input type="file" id="ch-wadfile" accept=".wad" style="display:none">
+        <button id="ch-loadwad" title="hot-load a binary WAD (textures, sprites, maps) in place">LOAD WAD</button>
+        <select id="ch-wadlist" title="hot-load a WAD from the server's /wads folder">
+          <option value="">load from /wads…</option>
+        </select>
+        <select id="ch-map" title="warp to map (idclev-style)">
+          <option value="">warp to map…</option>
+        </select>
+        <button id="ch-warp" title="load the selected map">GO</button>
+      </span>
+    </div>
+  </div>
+  <div class="cap">AUTOMAP <span id="mapname"></span></div>
+    <canvas id="automap"></canvas>
+    <div id="debugstrip"><span id="debugtext"></span><button id="copystrip" title="copy debug info">&#10697;</button></div>
+  </div>
+</div>
+<!-- order matters: engine (renderer/map), then game (logic), then automap
+     overlay, then status bar, then glue. NO baked content bundles: every
+     map/texture/sprite/sound/music/graphic is hot-loaded from the WAD by
+     wadinstall.js (containers pre-declared empty by its shim). -->
+<script src="src/sound.js"></script>
+<script src="src/opl.js"></script>
+<script src="src/tables.js"></script>
+<script src="src/wad.js"></script>
+<script src="src/wadinstall.js"></script>
+<script src="src/engine.js"></script>
+<script src="src/f_wipe.js"></script>
+<script src="src/game.js"></script>
+<script src="src/p_saveg.js"></script>
+<script src="src/wi.js"></script>
+<script src="src/f_finale.js"></script>
+<script src="src/m_menu.js"></script>
+<script src="src/automap.js"></script>
+<script src="src/am_map.js"></script>
+<script src="src/hud.js"></script>
+<script src="src/hu.js"></script>
+<script src="src/main.js"></script>
+</body>
+</html>

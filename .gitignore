@@ -1,0 +1,13 @@
+# reference id Software sources — kept locally as behavioral truth, not committed
+reference/
+
+# stray debug renders
+*.png.out
+
+wads/*.wad
+tools/__pycache__/
+
+# local build toolchain / probe outputs (regenerable)
+tools/wasi-sdk/
+tools/sample-*
+tools/out-*.wav

@@ -1,0 +1,18 @@
+# Image content = game files only (see Dockerfile). Everything else is
+# dev/reference material that must not ship:
+.git
+.gitignore
+.dockerignore
+Dockerfile
+reference/
+wads/
+assets/
+assets-debug/
+assets-doom1-beta/
+README.md
+tools/*
+!tools/server.js
+**/__pycache__/
+**/*.ogg
+**/*.wav
+**/*.png.out

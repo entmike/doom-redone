@@ -1,0 +1,6 @@
+# Everything in here is content extracted from the WADs — hot-loaded at
+# runtime now (see src/wad.js + wadinstall.js), so nothing belongs here.
+# Engine code + the DBOPL wasm live in src/; maps/textures/sounds/music/
+# graphics all stream from wads/*.wad in the browser.
+*
+!.gitignore

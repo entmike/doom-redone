@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>E1M1 — automap (live things)</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; height: 100%; overflow: hidden;
+               font-family: monospace; }
+  #stage { display: flex; flex-direction: column; height: 100%; padding: 6px;
+           box-sizing: border-box; gap: 6px; }
+  #cap { color: #f33; font-size: 13px; text-align: center; background: #1a0000;
+         padding: 4px 0; letter-spacing: 1px; flex: 0 0 auto; }
+  #automap { flex: 1 1 auto; width: 100%; min-height: 0; background: #0d0d0d;
+             border: 1px solid #300; }
+  #ro { color: #f55; font-size: 12px; text-align: center; flex: 0 0 auto; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="cap">AUTOMAP <span id="mapname"></span> <span id="link" style="color:#0a0"></span></div>
+  <canvas id="automap"></canvas>
+  <div id="ro">standby — open the game tab and the map will follow in realtime</div>
+</div>
+<script src="src/wad.js"></script>
+<script src="src/wadinstall.js"></script>
+<script src="src/engine.js"></script>
+<script src="src/automap.js"></script>
+<script>
+/* map.html — standalone enlarged automap in its own tab.
+   The game tab broadcasts player position + live thing markers over a
+   BroadcastChannel; this page renders them with the same Automap module. */
+'use strict';
+const cv = document.getElementById('automap');
+const ro = document.getElementById('ro');
+let mapJsonName = new URLSearchParams(location.search).get('map') || 'E1M1';
+const WAD_URL = new URLSearchParams(location.search).get('wad') || 'wads/doom1.wad';
+let WADINST = null;
+// legacy 'assets/e1m5.json' or bare 'E1M5' -> WAD map marker name
+function wadMapName(n) {
+  const m = /E(\d)M(\d)/i.exec(n || '');
+  return m ? ('E' + m[1] + 'M' + m[2]).toUpperCase() : (n || '').toUpperCase();
+}
+let fake = { player: { mo: { x: 0, y: 0, angle: 0 } } };
+let markers = [];
+let lastMsg = 0;
+
+// shim so automap.js works without game.js loaded
+window.G = { liveThinkers: () => markers, player: fake.player };
+
+async function boot() {
+  // no-baked-assets: maps come from the WAD (same source as the game tab)
+  if (!WADINST) {
+    const r = await fetch(WAD_URL, { cache: 'no-store' });
+    if (!r.ok) throw new Error('WAD not found: ' + WAD_URL);
+    WADINST = WAD.load(await r.arrayBuffer());
+    // engine R_InitData/R_InitColormaps read ASSETS.* — full install, same
+    // as the game tab (automap painting needs flats/palette/colormaps)
+    WadInstall.install(WADINST);
+  }
+  const wmap = wadMapName(mapJsonName);
+  const mj = WAD.mapJson(WADINST, wmap);
+  if (!mj) throw new Error('map not in WAD: ' + wmap);
+  loadMap(mj);
+  Automap.init(cv);
+  Automap.rebind();
+  document.getElementById('mapname').textContent = '\u00b7 ' + (mj.mapname || wmap);
+  if ('BroadcastChannel' in window) {
+    const bc = new BroadcastChannel('doom-redone-map');
+    bc.onmessage = ev => {
+      const d = ev.data;
+      if (!d) return;
+      if (d.map && wadMapName(d.map) !== wadMapName(mapJsonName)) {   // game switched levels
+        mapJsonName = d.map;
+        reloading = true;
+        boot().then(() => { reloading = false; });
+        return;
+      }
+      lastMsg = performance.now();
+      fake.player.mo.x = d.x; fake.player.mo.y = d.y; fake.player.mo.angle = d.ang;
+      markers = d.things.map(t => ({
+        x: t[0], y: t[1], flags: t[2], info: { doomednum: t[3], spawnhealth: t[4] },
+        health: t[5], sprite: t[6]
+      }));
+    };
+  }
+  if (!loopStarted) { loopStarted = true; requestAnimationFrame(loop); }
+}
+let reloading = false, loopStarted = false;
+function loop(now) {
+  Automap.draw();
+  const live = now - lastMsg < 1000;
+  document.getElementById('link').textContent = live ? '\u00b7 LIVE' : '\u00b7 no game tab sending';
+  document.getElementById('link').style.color = live ? '#0a0' : '#a00';
+  if (live) {
+    const m = fake.player.mo;
+    ro.textContent = `X:${m.x >> 16} Y:${m.y >> 16} ANG:` +
+      `${((m.angle >>> 0) * 360 / 4294967296).toFixed(1)}\u00b0 \u00b7 things:${markers.length}`;
+  }
+  requestAnimationFrame(loop);
+}
+boot();
+</script>
+</body>
+</html>
