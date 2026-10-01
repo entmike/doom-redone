@@ -893,7 +893,54 @@ function menuHooks() {
 
 // ---- WAD hot-load (dev/wad-hotload): swap ASSETS to binary WAD data ----
 // Sound/music/title/menu graphics stay baked assets (documented limitation).
-async function hotLoadWad(arrayBuffer, label) {
+
+// ---- IWAD+PWAD layering (vanilla -iwad/-file model) ----------------------
+// Map-only PWADs (WadInstall.isOverlay: maps but zero graphics — e.g.
+// wads/myhouse.wad) install OVER a content base: overlay() swaps maps +
+// title cache while the base's ASSETS/patches/demos stay live. If no base
+// is installed yet (boot straight into the PWAD), pickOverlayBase fetches
+// candidate IWADs from the /wads listing and installs the first one that
+// covers every texture/flat the PWAD's maps reference.
+async function pickOverlayBase(pwWad) {
+  let names = [];
+  try {
+    const r = await fetch('wads', { cache: 'no-store' });
+    if (r.ok) names = await r.json();
+  } catch (e) { /* no /wads API (file-picker only): PWAD must ride an IWAD */ }
+  // content-rich first: canonical IWAD names before everything else
+  const pref = ['DOOM2.WAD', 'ULTIMATE-DOOM.WAD', 'DOOM1.9-RETAIL.WAD',
+                'FREEDOOM2.WAD', 'PLUTONIA.WAD', 'TNT.WAD', 'NERVE.WAD',
+                'DOOM1.WAD'];
+  names = names.filter(n => /\.wad$/i.test(n))
+               .sort((a, b) => {
+                 const ia = pref.indexOf(a.toUpperCase()), ib = pref.indexOf(b.toUpperCase());
+                 return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+               });
+  for (const name of names) {
+    loadProgress = { label: 'PWAD: LOOKING FOR BASE IWAD', frac: null,
+                     note: 'TRYING ' + name.toUpperCase() };
+    drawLoadProgress();
+    let buf;
+    try {
+      const r = await fetch('wads/' + encodeURIComponent(name), { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      buf = await r.arrayBuffer();
+    } catch (e) { continue; }
+    let wad;
+    try { wad = WAD.load(buf); } catch (e) { continue; }
+    if (WadInstall.isOverlay(wad)) continue;          // another map-only PWAD
+    const miss = WadInstall.missingGraphics(wad, pwWad);
+    if (miss.textures.length || miss.flats.length) { _baseTried.push(name); continue; }
+    // Full coverage: full-install this as the base (fills ASSETS/title art).
+    await hotLoadWad(buf, name, { asBaseFor: pwWad });
+    return name;
+  }
+  return null;
+}
+let _baseTried = [];
+let _overlayPending = null;               // PWAD waiting on its base install
+
+async function hotLoadWad(arrayBuffer, label, opts) {
   const wasTitle = gamestate === 'title';
   // Install decodes every texture/sprite synchronously (vanilla W_Cache at
   // startup); paint the last progress frame and hand one tick to the browser
@@ -902,7 +949,43 @@ async function hotLoadWad(arrayBuffer, label) {
   drawLoadProgress();
   await new Promise(r => setTimeout(r, 0));
   const wad = WAD.load(arrayBuffer);
-  const rep = WadInstall.install(wad);
+  let rep;
+  const isPw = WadInstall.isOverlay(wad);
+  if (isPw && !opts) {
+    // Map-only PWAD: layer over a content base. Booting straight into the
+    // PWAD (nothing installed yet) auto-picks an IWAD that covers its
+    // graphics; that install recurses with {asBaseFor} and lands back here.
+    if (!WadInstall.base()) {
+      const baseName = await pickOverlayBase(wad);
+      if (!baseName) {
+        const miss = WadInstall.active() ?
+          'no hosted IWAD covers it' : 'no base IWAD available';
+        throw new Error('Map-only PWAD: ' + miss +
+          ' — load a full IWAD first, then load this PWAD over it');
+      }
+      return 'map-only PWAD: layered over ' + baseName.toUpperCase();
+    }
+    if (!WadInstall.active()) throw new Error('WAD not installed');
+    // Hot-load over the live base: warn loudly (but don't block) if the
+    // base can't paint some of the PWAD's textures/flats (black stand-in).
+    const miss = WadInstall.missingGraphics(WadInstall.base(), wad);
+    rep = WadInstall.overlay(wad);
+    if (miss.textures.length || miss.flats.length)
+      rep.missing = miss;
+  } else if (isPw && opts && opts.asBaseFor) {
+    rep = WadInstall.install(wad);          // this WAD is the base...
+  } else {
+    rep = WadInstall.install(wad);
+  }
+  if (opts && opts.asBaseFor) {
+    // deferred: this install is the BASE pickOverlayBase chose for a PWAD.
+    // Seed base maps first, then overlay the PWAD's on top (PWAD wins name
+    // collisions in titleMapCache). The live-base branch above already
+    // called overlay() itself and must not re-apply here.
+    _overlayPending = opts.asBaseFor;
+  } else {
+    _overlayPending = null;
+  }
   // Side-panel logo above the cheat panel: the same M_DOOM patch the main
   // menu draws (m_menu.js MainDef); TITLEPIC as fallback for PWAD-less lumps.
   {
@@ -919,7 +1002,19 @@ async function hotLoadWad(arrayBuffer, label) {
   // slots. Other WADs' namespaced saves are preserved for when you switch
   // back; only pre-namespacing legacy keys are deleted on install.
   if (window.SAVE && SAVE.nukeForeignSaves) SAVE.nukeForeignSaves();
-  const n = WadInstall.seedTitleCache(titleMapCache);
+  let n = WadInstall.seedTitleCache(titleMapCache);
+  if (_overlayPending) {
+    // Base just installed; layer the map-only PWAD on top now (its maps win
+    // name collisions). Re-run the engine seams (sprite/texture tables are
+    // base content and already built; automap/wipe handled by the branches
+    // below) with the PWAD maps live.
+    const pw = _overlayPending;
+    _overlayPending = null;
+    const prep = WadInstall.overlay(pw);
+    n += WadInstall.seedTitleCache(titleMapCache);
+    if (prep.missing) rep.missing = prep.missing;
+    rep.overlayMaps = WAD.mapList(pw).map(m => m.name).join('+');
+  }
   // g_game.c:1012 G_SecretExitLevel checks W_CheckNumForName("map31")
   if (window.G) G.hasMap31 = WadInstall.maps().some(m => m.name === 'MAP31');
 

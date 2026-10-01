@@ -25,7 +25,87 @@ if (typeof INTERLUDE === 'undefined')
 if (typeof TITLE === 'undefined') globalThis.TITLE = { patches: {}, demos: {} };
 
 const WadInstall = (() => {
-  let _wad = null, _bundles = null, _demos = null, _fp = null;
+  let _wad = null, _bundles = null, _demos = null, _fp = null, _base = null;
+  // ---- IWAD+PWAD layering -------------------------------------------------
+  // A PWAD that carries maps but no content (no F_START flats, no TEXTURE1,
+  // no PLAYPAL, no sprites — e.g. wads/myhouse.wad: MAP01 + 10 map lumps,
+  // zero graphics) is an OVERLAY, not a game: vanilla's -iwad/-file model.
+  // isOverlay() classifies it; the host keeps the previous install as the
+  // base and calls overlay() so the base's ASSETS/bundles stay live while
+  // only the PWAD's maps + fingerprint swap. A graphics-less install on
+  // top of a content WAD otherwise leaves ASSETS.flats at the empty shim
+  // and R_InitData dies on its F_SKY1 sky-band read (BOOT ERROR).
+  function isOverlay(wad) {
+    const maps = WAD.mapList(wad);
+    if (!maps.length) return false;
+    if (wad.lump('PLAYPAL') || wad.lump('COLORMAP') ||
+        wad.lump('TEXTURE1') || wad.lump('PNAMES')) return false;
+    if (wad.find('S_START') >= 0) return false;
+    const fa = wad.find('F_START'), fe = wad.find('F_END');
+    if (fa >= 0 && fe > fa) {
+      for (let i = fa + 1; i < fe; i++)
+        if (wad.lumps[i].size === 4096) return false;
+    }
+    // any decodable patch candidate => it ships real graphics: not an overlay
+    for (const L of wad.lumps) {
+      if (!L.size || L.size < 16) continue;
+      if (/_START$|_END$/.test(L.name)) continue;
+      const p = WAD.decodePatch(wad, L.name);
+      if (p && p.w > 0 && p.h > 0) return false;
+    }
+    return true;
+  }
+  // Coverage check for layering: every texture/flAT name referenced by
+  // mapWad's maps (SIDEDEFS 30-byte records: tex fields @4/@12/@20;
+  // SECTORS 26-byte records: flat/ceil @4/@12; '-' and empty = no texture)
+  // must exist as a composed texture / flat in baseWad, else it renders
+  // black. Returns the missing names so the host can pick another base.
+  function missingGraphics(baseWad, mapWad) {
+    const nm = (b, o) => {
+      let s = '';
+      for (let i = 0; i < 8 && b[o + i]; i++) s += String.fromCharCode(b[o + i]);
+      return s;
+    };
+    const texs = new Set(), flats = new Set();
+    for (const m of WAD.mapList(mapWad)) {
+      // mapList guarantees the 10 map lumps follow the marker in MAP_LUMPS order
+      const siB = new Uint8Array(mapWad.lumps[m.index + 3].data());   // SIDEDEFS
+      const scB = new Uint8Array(mapWad.lumps[m.index + 8].data());   // SECTORS
+      for (let i = 0; i + 30 <= siB.length; i += 30)
+        for (const s of [4, 12, 20]) {
+          const t = nm(siB, i + s);
+          if (t && t !== '-') texs.add(t);
+        }
+      for (let i = 0; i + 26 <= scB.length; i += 26)
+        for (const s of [4, 12]) {
+          const f = nm(scB, i + s);
+          if (f && f !== '-') flats.add(f);
+        }
+    }
+    const haveTex = new Set(WAD.readTextures(baseWad).textures.map(t => t.name));
+    const haveFlat = new Set();
+    for (const L of baseWad.lumps) if (L.size === 4096) haveFlat.add(L.name);
+    return {
+      textures: [...texs].filter(t => !haveTex.has(t)).sort(),
+      flats: [...flats].filter(f => !haveFlat.has(f)).sort(),
+    };
+  }
+
+  // Apply a map-only PWAD over the currently installed base. Only maps and
+  // the save-namespace fingerprint change; ASSETS/patches/demos belong to
+  // the base IWAD and stay exactly as installed.
+  function overlay(wad) {
+    const base = _base;                   // install() rewrites both below
+    const baseFp = _fp;
+    const report = install(wad);          // content guards leave ASSETS alone
+    _base = base;                         // graphics/saves still belong to base
+    _fp = baseFp;                         // vanilla: saves namespace by IWAD,
+                                          // never by the -file PWAD
+    _bundles = null;                      // PWAD ships no graphics: applyBundles
+    _demos = null;                        // now no-ops, base art/demos stay live
+    report.overlay = true;
+    return report;
+  }
 
   // d_main.c IdentifyVersion analogue. Gospel keys the mode off the IWAD
   // *filename* (doom2.wad → commercial, doomu.wad → retail, doom.wad →
@@ -221,17 +301,19 @@ const WadInstall = (() => {
 
     report.maps = WAD.mapList(wad).length;
     _wad = wad;
+    _base = wad;                          // full install: this WAD is the base
     return report;
   }
 
   // Fill main.js's titleMapCache under BOTH the WAD name and the legacy
   // assets/e1mN.json keys, so startGame/gotoMap/SAVE.fetchMap all resolve
   // WAD maps with zero further changes.
-  function seedTitleCache(cache) {
-    if (!_wad) return 0;
+  function seedTitleCache(cache, wadOverride) {
+    const w = wadOverride || _wad;
+    if (!w) return 0;
     let n = 0;
-    for (const m of WAD.mapList(_wad)) {
-      const mj = WAD.mapJson(_wad, m.name);
+    for (const m of WAD.mapList(w)) {
+      const mj = WAD.mapJson(w, m.name);
       cache[m.name] = mj;
       // legacy keys: pre-WAD tooling/tests address maps as
       // assets/e1mN.json / assets/mapNN.json — keep both spellings live.
@@ -246,6 +328,7 @@ const WadInstall = (() => {
 
   const maps = () => (_wad ? WAD.mapList(_wad) : []);
   const active = () => _wad;
+  const base = () => _base;               // content IWAD under any overlay
 
   // Side-panel branding: rasterize a menu/title patch lump (M_DOOM above the
   // main menu, TITLEPIC on commercial) into a PNG data URL for DOM <img>s —
@@ -289,7 +372,7 @@ const WadInstall = (() => {
 
   // Test seam: pretend a different IWAD is installed (cross-WAD isolation
   // checks in tools/test-save.js exercise the save/load namespacing).
-  return { install, seedTitleCache, applyBundles, maps, active, detectMode,
+  return { install, overlay, isOverlay, missingGraphics, seedTitleCache, applyBundles, maps, active, base, detectMode,
     logoPNG,
     fingerprint: () => _fp, setFingerprint: (fp) => { _fp = fp; } };
 })();
