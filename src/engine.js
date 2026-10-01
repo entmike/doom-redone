@@ -2224,16 +2224,15 @@ var spriteoffset = [], spritewidth = [], spriteoffsety = [],
     spritetopoffset = [], spritePix = [], spritePatch = [];
 var spriteNameIdx = {};              // "POSS" -> sprites index
 
-// post-decode a sprite lump into {pix, cols} (posts per column, §buildPosts)
+// post-decode a sprite lump into {pix, cols} (posts per column, §buildPosts).
+// DEVIATION FIXED (mirror monsters angled wrong both sides): this used to
+// horizontally pre-mirror the pixels when flip was requested, but
+// R_ProjectSprite ALSO sets xiscale<0 for flipped rotations (gospel
+// r_things.c:532) — mirror x mirror = identity, so rotations 5-8 drew the
+// UNMIRRORED art. Vanilla decodes each lump once, unmirrored: the flip is
+// ONLY the negative xiscale column walk. flip param now ignored.
 function R_DecodeSpritePatch(b64, w, h, flip) {
     var px = b64decode(b64);
-    if (flip) {
-        var out = new Uint8Array(px.length);
-        for (var y = 0; y < h; y++)
-            for (var x = 0; x < w; x++)
-                out[y * w + x] = px[y * w + (w - 1 - x)];
-        px = out;
-    }
     return buildPosts(px, w, h);
 }
 
