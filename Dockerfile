@@ -17,6 +17,7 @@ WORKDIR /app
 
 # server.js resolves ROOT as the parent of tools/, so keep that layout.
 COPY index.html map.html ./
+COPY favicon.ico favicon.png ./
 COPY src/ ./src/
 COPY tools/server.js ./tools/
 
