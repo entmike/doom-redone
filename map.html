@@ -44,6 +44,41 @@ let fake = { player: { mo: { x: 0, y: 0, angle: 0 } } };
 let markers = [];
 let lastMsg = 0;
 
+// Map-only PWAD overlay: fetch a content base IWAD from the /wads listing
+// (canonical order first), install the first one that covers every
+// texture/flat the PWAD references, and return the PWAD struct so boot()
+// reads its map lumps. Mirrors main.js pickOverlayBase (map.html can't
+// hot-swap a running game, so only the content install is needed here).
+async function pickMapBase(pwWad) {
+  let names = [];
+  try {
+    const r = await fetch('wads', { cache: 'no-store' });
+    if (r.ok) names = await r.json();
+  } catch (e) { /* no /wads API: cannot cover a bare PWAD */ }
+  const pref = ['DOOM2.WAD', 'ULTIMATE-DOOM.WAD', 'DOOM1.9-RETAIL.WAD',
+                'FREEDOOM2.WAD', 'PLUTONIA.WAD', 'TNT.WAD', 'NERVE.WAD',
+                'DOOM1.WAD'];
+  names = names.filter(n => /\.wad$/i.test(n))
+               .sort((a, b) => {
+                 const ia = pref.indexOf(a.toUpperCase()), ib = pref.indexOf(b.toUpperCase());
+                 return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+               });
+  for (const name of names) {
+    let wad;
+    try {
+      const r = await fetch('wads/' + encodeURIComponent(name), { cache: 'no-store' });
+      if (!r.ok) continue;
+      wad = WAD.load(await r.arrayBuffer());
+    } catch (e) { continue; }
+    if (WadInstall.isOverlay(wad)) continue;
+    const miss = WadInstall.missingGraphics(wad, pwWad);
+    if (miss.textures.length || miss.flats.length) continue;
+    WadInstall.install(wad);              // fills ASSETS for R_InitData
+    return pwWad;                         // maps still come from the PWAD
+  }
+  throw new Error('map-only PWAD needs a base IWAD (none hosted covers it)');
+}
+
 // shim so automap.js works without game.js loaded
 window.G = { liveThinkers: () => markers, player: fake.player };
 
@@ -54,8 +89,15 @@ async function boot() {
     if (!r.ok) throw new Error('WAD not found: ' + WAD_URL);
     WADINST = WAD.load(await r.arrayBuffer());
     // engine R_InitData/R_InitColormaps read ASSETS.* — full install, same
-    // as the game tab (automap painting needs flats/palette/colormaps)
-    WadInstall.install(WADINST);
+    // as the game tab (automap painting needs flats/palette/colormaps).
+    // Map-only PWAD (?wad=myhouse.wad): overlay over a content base, same
+    // -file layering as the game tab — a bare install leaves ASSETS.flats
+    // empty and R_InitData dies on its F_SKY1 read.
+    if (WadInstall.isOverlay(WADINST)) {
+      WADINST = await pickMapBase(WADINST);
+    } else {
+      WadInstall.install(WADINST);
+    }
   }
   const wmap = wadMapName(mapJsonName);
   const mj = WAD.mapJson(WADINST, wmap);
