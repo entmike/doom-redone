@@ -33,7 +33,7 @@ def main():
     names = sys.argv[2:] or DEFAULT
     wad = wad_assets.Wad(os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        'wads', 'Doom1.wad'))
+        'wads', os.environ.get('DOOM_WAD', 'Doom1.wad')))
     pal = struct.unpack('<768B', wad.get('PLAYPAL')[0][:768])
     rgb = [(pal[i*3], pal[i*3+1], pal[i*3+2]) for i in range(256)]
 
