@@ -928,7 +928,7 @@ async function pickOverlayBase(pwWad) {
     } catch (e) { continue; }
     let wad;
     try { wad = WAD.load(buf); } catch (e) { continue; }
-    if (WadInstall.isOverlay(wad)) continue;          // another map-only PWAD
+    if (WadInstall.isOverlay(wad) || WadInstall.detectZDoom(wad)) continue;  // PWAD / UDMF
     const miss = WadInstall.missingGraphics(wad, pwWad);
     if (miss.textures.length || miss.flats.length) { _baseTried.push(name); continue; }
     // Full coverage: full-install this as the base (fills ASSETS/title art).
@@ -949,6 +949,16 @@ async function hotLoadWad(arrayBuffer, label, opts) {
   drawLoadProgress();
   await new Promise(r => setTimeout(r, 0));
   const wad = WAD.load(arrayBuffer);
+  // Format tripwire BEFORE any install/overlay mutation: UDMF/ZDoom maps
+  // (TEXTMAP / XGL3 ZNODES / ACS BEHAVIOR) cannot parse in a vanilla-1.10
+  // loader; say so plainly instead of crashing later in R_InitData.
+  const zd = WadInstall.detectZDoom(wad);
+  if (zd) {
+    const e = new Error('ZDoom/UDMF WAD unsupported (' + zd +
+      '): needs a vanilla-converted build — convert in GZDoom/ZDBSP or load a DOOM-format WAD');
+    e.formatError = true;
+    throw e;
+  }
   let rep;
   const isPw = WadInstall.isOverlay(wad);
   if (isPw && !opts) {

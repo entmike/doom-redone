@@ -70,7 +70,7 @@ async function pickMapBase(pwWad) {
       if (!r.ok) continue;
       wad = WAD.load(await r.arrayBuffer());
     } catch (e) { continue; }
-    if (WadInstall.isOverlay(wad)) continue;
+    if (WadInstall.isOverlay(wad) || WadInstall.detectZDoom(wad)) continue;
     const miss = WadInstall.missingGraphics(wad, pwWad);
     if (miss.textures.length || miss.flats.length) continue;
     WadInstall.install(wad);              // fills ASSETS for R_InitData
@@ -88,6 +88,10 @@ async function boot() {
     const r = await fetch(WAD_URL, { cache: 'no-store' });
     if (!r.ok) throw new Error('WAD not found: ' + WAD_URL);
     WADINST = WAD.load(await r.arrayBuffer());
+    // Format tripwire: UDMF/ZDoom maps cannot parse here (same check as
+    // main.js hotLoadWad) — fail with a clear message, not R_InitData.
+    const zd = WadInstall.detectZDoom(WADINST);
+    if (zd) throw new Error('ZDoom/UDMF WAD unsupported (' + zd + ')');
     // engine R_InitData/R_InitColormaps read ASSETS.* — full install, same
     // as the game tab (automap painting needs flats/palette/colormaps).
     // Map-only PWAD (?wad=myhouse.wad): overlay over a content base, same
@@ -140,7 +144,12 @@ function loop(now) {
   }
   requestAnimationFrame(loop);
 }
-boot();
+boot().catch(e => {
+  // surface boot failures (missing WAD, ZDoom/UDMF tripwire) in the readout
+  // line instead of an unhandled rejection + silent 'standby'
+  ro.textContent = 'BOOT ERROR: ' + e.message;
+  ro.style.color = '#f33';
+});
 </script>
 </body>
 </html>

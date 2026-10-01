@@ -55,6 +55,27 @@ const WadInstall = (() => {
     }
     return true;
   }
+  // ZDoom/UDMF format tripwire. A map authored in UDMF carries a TEXTMAP
+  // lump (text-format namespace) instead of the ten vanilla binary lumps,
+  // 'XGL3' extended GL-nodes in ZNODES, and DECORATE actors. None of it is
+  // parseable by this port's vanilla-1.10 loader, and such files typically
+  // also skip PLAYPAL/TEXTURE1 (ZDoom synthesizes them), which made the
+  // failure surface as the cryptic R_InitData 'reading 2' crash. Detect the
+  // format and say so instead: return the reason or null.
+  function detectZDoom(wad) {
+    if (wad.find('TEXTMAP') >= 0)
+      return 'UDMF map (TEXTMAP lump)';
+    const zn = wad.lump('ZNODES');
+    if (zn && zn.size >= 4) {
+      const u = zn.data();
+      if (u[0] === 0x58 && u[1] === 0x47 && u[2] === 0x4C)   // 'XGL' / 'XZNL'
+        return 'ZDoom extended node data (ZNODES "' +
+          String.fromCharCode(u[0], u[1], u[2], u[3]) + '")';
+    }
+    if (wad.find('BEHAVIOR') >= 0) return 'ZDoom ACS bytecode (BEHAVIOR)';
+    return null;
+  }
+
   // Coverage check for layering: every texture/flAT name referenced by
   // mapWad's maps (SIDEDEFS 30-byte records: tex fields @4/@12/@20;
   // SECTORS 26-byte records: flat/ceil @4/@12; '-' and empty = no texture)
@@ -66,6 +87,8 @@ const WadInstall = (() => {
       for (let i = 0; i < 8 && b[o + i]; i++) s += String.fromCharCode(b[o + i]);
       return s;
     };
+    // vanilla lookup is case-insensitive (R_*NumForName uppercases; some
+    // maps' SIDEDEFS carry lowercase names) — normalize both sides
     const texs = new Set(), flats = new Set();
     for (const m of WAD.mapList(mapWad)) {
       // mapList guarantees the 10 map lumps follow the marker in MAP_LUMPS order
@@ -74,17 +97,17 @@ const WadInstall = (() => {
       for (let i = 0; i + 30 <= siB.length; i += 30)
         for (const s of [4, 12, 20]) {
           const t = nm(siB, i + s);
-          if (t && t !== '-') texs.add(t);
+          if (t && t !== '-') texs.add(t.toUpperCase());
         }
       for (let i = 0; i + 26 <= scB.length; i += 26)
         for (const s of [4, 12]) {
           const f = nm(scB, i + s);
-          if (f && f !== '-') flats.add(f);
+          if (f && f !== '-') flats.add(f.toUpperCase());
         }
     }
-    const haveTex = new Set(WAD.readTextures(baseWad).textures.map(t => t.name));
+    const haveTex = new Set(WAD.readTextures(baseWad).textures.map(t => t.name.toUpperCase()));
     const haveFlat = new Set();
-    for (const L of baseWad.lumps) if (L.size === 4096) haveFlat.add(L.name);
+    for (const L of baseWad.lumps) if (L.size === 4096) haveFlat.add(L.name.toUpperCase());
     return {
       textures: [...texs].filter(t => !haveTex.has(t)).sort(),
       flats: [...flats].filter(f => !haveFlat.has(f)).sort(),
@@ -372,7 +395,7 @@ const WadInstall = (() => {
 
   // Test seam: pretend a different IWAD is installed (cross-WAD isolation
   // checks in tools/test-save.js exercise the save/load namespacing).
-  return { install, overlay, isOverlay, missingGraphics, seedTitleCache, applyBundles, maps, active, base, detectMode,
+  return { install, overlay, isOverlay, missingGraphics, detectZDoom, seedTitleCache, applyBundles, maps, active, base, detectMode,
     logoPNG,
     fingerprint: () => _fp, setFingerprint: (fp) => { _fp = fp; } };
 })();
