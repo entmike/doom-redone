@@ -80,6 +80,14 @@ run('for (var i = 0; i < 8000 && MEN.demoplayback; i++) __reader(c);');
 ok(run('MEN.demoplayback') === false, 'demo end marker clears demoplayback');
 run('tick(1);');
 ok(run('MEN.pagename') === 'CREDIT', 'after demo1 -> CREDIT page');
+// gospel G_CheckDemoStatus (g_game.c:1658) ADVANCES the cycle: demo1(seq1)
+// ends -> CREDIT(seq2), NOT StartTitle() back to TITLEPIC(seq0). Source ban:
+// the levelExit demo branch in main.js must not call StartTitle.
+const mjs = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+const exitBranch = mjs.slice(mjs.indexOf('if (window.levelExit && gamestate === \'level\')'),
+  mjs.indexOf('if (window.levelExit && gamestate === \'level\')') + 900);
+ok(/D_AdvanceDemo\(\);[\s\S]*?\}/.test(exitBranch) && !/StartTitle/.test(exitBranch),
+  'attract demo exit ADVANCES the cycle (no StartTitle reset)');
 
 // any key on the title pops the control panel (G_Responder demo pop-up)
 run('log.length = 0; closeAll(); MEN.Responder(32);');

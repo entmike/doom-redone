@@ -1396,12 +1396,35 @@ function frame(now) {
       }
       buildTiccmd();
       if (demoReader) demoReader(cmd);          // G_ReadDemoTiccmd overwrite
+      // Gospel TryRunTics (d_net.c:742) processes advancedemo EVERY tic,
+      // not just on the title path. When the reader hits DEMOMARKER
+      // mid-level (every vanilla demo that ends by stop-recording rather
+      // than exit switch), G_CheckDemoStatus has already fired inside
+      // m_menu.js and queued D_AdvanceDemo — leave the seam set and the
+      // pending advance never runs: the reader returns at the marker
+      // forever and the dead demo level ticks on silently. Drop the seam
+      // and hand control to the title branch, which runs MEN.Ticker()
+      // (the actual doAdvanceDemo) on the next tic.
+      if (demoReader && MEN.advancedemo) {
+        demoReader = null; G.demoplayback = false; usergame = false;
+        gamestate = 'title';
+      }
       // gameaction is processed at the TOP of the NEXT G_Ticker in vanilla
       // (g_game.c:605-649) — so the tic that pressed the exit switch still
       // renders the level once, showing the flipped SW2 button, before
       // G_DoCompleted switches to the intermission.
       if (window.levelExit && gamestate === 'level') {
-        if (demoReader) { demoReader = null; G.demoplayback = false; usergame = false; window.levelExit = false; MEN.D_AdvanceDemo(); gamestate = 'title'; MEN.StartTitle(); }
+        if (demoReader) {
+          // gospel G_CheckDemoStatus (g_game.c:1658-1673): clear playback
+          // flags + D_AdvanceDemo ONLY. Restarting the whole title loop
+          // would reset demosequence to -1, so the pending advance lands
+          // back on TITLEPIC and CREDIT/HELP2/DEMO2 get starved each cycle.
+          demoReader = null; G.demoplayback = false; usergame = false;
+          window.levelExit = false;
+          MEN.G_ClearDemoPlayback();
+          MEN.D_AdvanceDemo();
+          gamestate = 'title';
+        }
         else doLevelCompleted();
       }
       if (gamestate === 'intermission') {          // WI_Ticker only (d_main.c)
