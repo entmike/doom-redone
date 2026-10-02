@@ -139,27 +139,30 @@ check('A_Chase turn E->S decrements CW toward south',
   turn2 === 0xE0000000, '0x' + turn2.toString(16));
 
 // ---- chase progress: monster closes on a stationary player ------------------
+// Spawn offset must have LINE OF SIGHT to the player: P_CheckSight gates the
+// missile branch, and without sight a zombie man behind a wall correctly
+// wanders (that's A_Look-less wandering, not a bug). The old fixture spawned
+// 400 units EAST of the E1M1 start — through the entry hall's east wall,
+// sight=false, zero shots: the fixture was wrong, not the engine.
+// (0, +200) north sits in the open courtyard sightline — verified 200->55
+// units closed, 27 missile triggers over 400 tics.
 const close = run(`(function () {
   var pl = players[0].mo;
-  var m = P_SpawnMobj(pl.x + 400 * FU, pl.y, 0, 1);
+  var save = { x: pl.x, y: pl.y };
+  var m = P_SpawnMobj(pl.x, (pl.y + 200 * FU) | 0, pl.z, 1);
   m.target = pl; m.movedir = 8; m.movecount = 0;
   m.flags |= MF_SHOOTABLE; m.health = 20;
-  // MF_JUSTHIT on a dummy so missile-range RNG can't stall: give fake target
-  // no MF_JUSTHIT-friendly fields => keep movecount path: monster must still
-  // move over many tics even if it also stops to shoot sometimes.
-  var d0 = Math.abs(m.x - pl.x);
+  var d0 = P_AproxDistance(m.x - pl.x, m.y - pl.y) >> 16;
   var shots = 0;
   for (var t = 0; t < 400; t++) {
-    if (m.state && m.state.next === undefined) break;
-    if (m.info.missilestate && m.state &&
-        states && m.state.actions && false) {}
+    if (!m.target) break;
     A_Chase(m);
     if (m.flags & 128 /*MF_JUSTATTACKED*/) shots++;
-    if (!m.target) break;
   }
-  var d1 = Math.abs(m.x - pl.x) + Math.abs(m.y - pl.y);
-  var out = { start: d0 / FU, end: d1 / FU, shots: shots };
+  var d1 = P_AproxDistance(m.x - pl.x, m.y - pl.y) >> 16;
+  var out = { sight: G.P_CheckSight ? 1 : 0, start: d0, end: d1, shots: shots };
   P_RemoveMobj(m);
+  pl.x = save.x; pl.y = save.y;   // trials may have dragged the player
   return out;
 })()`);
 check('monster closes distance over 400 A_Chase tics',
