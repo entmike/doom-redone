@@ -2587,6 +2587,7 @@
     return false;
   }
   G.P_LineAttack = P_LineAttack; G.P_AimLineAttack = P_AimLineAttack;
+  G.P_CheckMissileRange = P_CheckMissileRange;               // test-rng.js pins the p_enemy.c:220-252 type branches
   G.P_BulletSlope = P_BulletSlope; G.P_GunShot = P_GunShot;
   G.P_SpawnPuff = P_SpawnPuff; G.P_SpawnBlood = P_SpawnBlood;
   G.getLinetarget = function () { return linetarget; };
@@ -3135,8 +3136,10 @@
           if (sec.floorheight === plat.high) { plat.status = down; }
           else if (sec.floorheight === plat.low) { plat.status = up; }
           else {
-            if ((P_Random() & 1) && sec.floorheight < plat.high) plat.status = down;
-            else plat.status = up;
+            // gospel p_plats.c:246 `plat->status = P_Random()&1` with C enum
+            // st_down=0/st_up=1 → roll bit 1 means UP. (JS enum is inverted,
+            // so the bit maps to up here — the old `&1 → down` was backwards.)
+            plat.status = (P_Random() & 1) ? up : down;
           }
           S_StartSound(sec.soundorg, SFX.sfx_pstart);
           if (!P_AddActivePlat(plat)) { P_RemoveThinker(plat.thinker); sec.specialdata = null; rtn = 0; continue; }
@@ -4626,7 +4629,7 @@
         default:
           sound = actor.info.seesound; break;
       }
-      if (actor.type === 27 || actor.type === 28)            // MT_SPIDER=27/MT_CYBORG=28 (vanilla ids; unported here — never matches)
+      if (actor.type === MT_SPIDER || actor.type === MT_CYBORG)   // p_enemy.c:652 (port enum ids: SPIDER=19, CYBORG=21)
         S_StartSound(null, sound);                           // full volume
       else
         S_StartSound(actor, sound);
@@ -4710,10 +4713,19 @@
     if (actor.flags & MF_JUSTHIT) { actor.flags &= ~MF_JUSTHIT; return true; }
     if (actor.reactiontime) return false;
     var dist = P_AproxDistance(actor.x - actor.target.x, actor.y - actor.target.y) - 64 * FU;
-    if (!actor.info.meleestate) dist -= 128 * FU;             // ⚠ poss/spos: no melee → fire more
+    if (!actor.info.meleestate) dist -= 128 * FU;             // poss/spos: no melee → fire more
     dist >>= 16;
+    // p_enemy.c:220-252 — type branches BEFORE the roll (they return WITHOUT
+    // touching the RNG; skipping them desynced every later P_Random call).
+    if (actor.type === MT_VILE && dist > 14 * 64) return false;   // too far away
+    if (actor.type === MT_UNDEAD) {
+      if (dist < 196) return false;                           // close for fist attack
+      dist >>= 1;
+    }
+    if (actor.type === MT_CYBORG || actor.type === MT_SPIDER || actor.type === MT_SKULL)
+      dist >>= 1;                                             // long-range bosses fire less
     if (dist > 200) dist = 200;
-    if (dist < -200) dist = 0;                                 // C keeps negative (P_Random()>=neg always true)
+    if (actor.type === MT_CYBORG && dist > 160) dist = 160;   // cyborg cap
     if (P_Random() < dist) return false;
     return true;
   }
@@ -4976,7 +4988,7 @@
       default:
         sound = actor.info.deathsound; break;
     }
-    if (actor.type === 27 || actor.type === 28)               // MT_SPIDER/MT_CYBORG (vanilla ids; unported here)
+    if (actor.type === MT_SPIDER || actor.type === MT_CYBORG)     // p_enemy.c:1561 "Check for bosses" (port enum ids)
       S_StartSound(null, sound);
     else
       S_StartSound(actor, sound);

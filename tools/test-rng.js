@@ -102,5 +102,42 @@ check('A_CPosAttack: 0 rolls when target==NULL (guard p_enemy.c:852)',
   budget('A_CPosAttack', 'no').calls === 0);
 check('A_CPosAttack: budget 8 = 3 attack + 3 puff + 2 puff-tics', C.calls === 8, C.calls);
 
+// ---- P_CheckMissileRange type branches (p_enemy.c:220-252) -----------------
+// These early-outs happen BEFORE the P_Random()<dist roll: they must burn
+// ZERO rolls. Skipping them (old bug) desynced the stream on every vile /
+// revenant-close / attempt. MT_VILE=16? — use the port enums from the vm.
+const ENUMS = { MT_VILE: 3, MT_UNDEAD: 5, MT_TROOP: 11, MT_SKULL: 18, MT_SPIDER: 19, MT_CYBORG: 21 };
+function mrRolls(type, distFu) {
+  return run(`(() => {
+    var p = G.players[0].mo;
+    var save = { x: p.x, y: p.y, hp: p.health };
+    var m = P_SpawnMobj(p.x, p.y, 0, ${type});
+    m.target = p; m.reactiontime = 0; m.flags &= ~64;      // ~MF_JUSTHIT
+    p.x = (m.x + ${distFu}) | 0; p.y = m.y;                // fixed distance apart
+    var sightOld = G.P_CheckSight;                          // stub sight so the
+    G.P_CheckSight = function () { return true; };          // DIST branches are what's measured
+    M_ClearRandom();
+    G.P_CheckMissileRange(m);
+    var used = prndindex & 0xff;
+    G.P_CheckSight = sightOld;
+    m.target = null; P_RemoveMobj(m);
+    p.x = save.x; p.y = save.y; p.health = save.hp;
+    return used;
+  })()`);
+}
+// dist after -64 and >>16 (map units): branch thresholds in p_enemy.c
+// vile beyond 14*64=896 MU early-outs; undead below 196 MU early-outs;
+// trooper in range reaches the single P_Random()<dist roll.
+check('P_CheckMissileRange: MT_VILE too-far early-out burns 0 rolls',
+  mrRolls(ENUMS.MT_VILE, (14 * 64 + 200) * 65536) === 0);
+check('P_CheckMissileRange: MT_UNDEAD too-close early-out burns 0 rolls',
+  mrRolls(ENUMS.MT_UNDEAD, 100 * 65536) === 0);
+check('P_CheckMissileRange: normal monster in range burns exactly 1 roll',
+  mrRolls(ENUMS.MT_TROOP, 300 * 65536) === 1);
+// spider at 300 MU: (300-64)>>1 = 118 -> still rolls once, but cap path
+// differs; assert the ROLL VALUE boundary: roll < dist gates firing.
+check('P_CheckMissileRange: MT_SPIDER halved-dist burns exactly 1 roll',
+  mrRolls(ENUMS.MT_SPIDER, 300 * 65536) === 1);
+
 console.log(failures ? 'RNG-FAIL ' + failures : 'RNG-OK all passed');
 process.exit(failures ? 1 : 0);
