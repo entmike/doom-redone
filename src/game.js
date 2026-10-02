@@ -4810,6 +4810,7 @@
       actor.angle = (actor.angle + (((P_Random() - P_Random()) << 21) >>> 0)) >>> 0;
   }
   function A_PosAttack(actor) {
+    if (!actor.target) return;                               // p_enemy.c:800 guard (RNG-order: no rolls without target)
     A_FaceTarget(actor);
     var angle = actor.angle;
     var slope = P_AimLineAttack(actor, angle, MISSILERANGE);
@@ -4819,15 +4820,20 @@
     P_LineAttack(actor, angle, MISSILERANGE, slope, damage);
   }
   function A_SPosAttack(actor) {
+    if (!actor.target) return;                               // p_enemy.c:829 — gospel guard: a target that
+    // dies mid-volley must NOT burn P_Random() calls (demo-sync: RNG is
+    // gospel mRandomSequence/P_Random, any skipped call desyncs every later roll)
     S_StartSound(actor, SFX.sfx_shotgn);
-    var bangle = actor.angle;
     A_FaceTarget(actor);
+    var bangle = actor.angle;
     var slope = P_AimLineAttack(actor, bangle, MISSILERANGE);
+    // gospel loop, p_enemy.c:837: exactly 3 P_Random() rolls per pass, in
+    // angle/damage/damage order, all three shots around the SAME bangle.
+    // (An earlier splice re-faced and burned 5 rolls per pass — same rate,
+    // wrong spread and a desynced PRNG stream.)
     for (var i = 0; i < 3; i++) {
       var angle = (bangle + (((P_Random() - P_Random()) << 20) >>> 0)) >>> 0;
       var damage = ((P_Random() % 5) + 1) * 3;
-      bangle = actor.angle;                                   // C: angle uses actor->angle each pass
-      angle = (actor.angle + (((P_Random() - P_Random()) << 20) >>> 0)) >>> 0;
       P_LineAttack(actor, angle, MISSILERANGE, slope, damage);
     }
   }
