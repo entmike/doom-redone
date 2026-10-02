@@ -1832,9 +1832,13 @@
       // thing IS the shooter, pass through — unconditionally. (MT_PLAYER
       // carries MF_PICKUP in info.c, so gating on MF_PICKUP here broke
       // player-fired missiles: they self-hit and detonated in the face.)
-      if (tmthing.target && thing.type === tmthing.target.type) {
+      // gospel p_map.c:299-314: "same species" includes the KNIGHT<->BRUISER
+      // cross-type rule, and player missiles CAN hit other players.
+      if (tmthing.target && (thing.type === tmthing.target.type ||
+        (tmthing.target.type === MT_KNIGHT && thing.type === MT_BRUISER) ||
+        (tmthing.target.type === MT_BRUISER && thing.type === MT_KNIGHT))) {
         if (thing === tmthing.target) return true;          // don't hit shooter
-        return false;                                       // same species: explode, no damage (MT_PLAYER check moot: only shooter's own type here, players handled above)
+        if (thing.type !== MT_PLAYER) return false;         // explode, no damage
       }
       if (!(thing.flags & MF_SHOOTABLE)) return !(thing.flags & MF_SOLID);
       var dmg = ((P_Random() % 8) + 1) * tmthing.info.damage;
@@ -1848,6 +1852,8 @@
     }
     return !(thing.flags & MF_SOLID);
   }
+  G.PIT_CheckThing = function (thing) { return PIT_CheckThing(thing); };
+  G.setTmthing = function (t) { tmthing = t; tmflags = t.flags; tmx = t.x; tmy = t.y; };
   function P_CheckPosition(thing, x, y) {
     tmthing = thing; tmflags = thing.flags; tmx = x; tmy = y;
     tmbbox[0] = (y + tmthing.radius) | 0; tmbbox[1] = (y - tmthing.radius) | 0;
@@ -1933,13 +1939,13 @@
   }
   G.P_TeleportMove = P_TeleportMove;
 
-  // P_ThingHeightClip (p_map.c:283 — used by PIT_ChangeSector only)
+  // P_ThingHeightClip (p_map.c:530 — used by PIT_ChangeSector only)
   function P_ThingHeightClip(thing) {
     var onfloor = (thing.z === thing.floorz);
-    var oldfloorz = thing.floorz, oldceilingz = thing.ceilingz;
     P_CheckPosition(thing, thing.x, thing.y);
-    if (oldfloorz === thing.floorz) { if (tmfloorz > thing.floorz) thing.floorz = tmfloorz; }
-    else thing.floorz = tmfloorz;
+    // gospel p_map.c:539-540: adopt tmfloorz/tmceilingz UNCONDITIONALLY
+    // (a monster stranded off a ledge follows the new lower floor).
+    thing.floorz = tmfloorz;
     thing.ceilingz = tmceilingz;
     if (onfloor) { thing.z = tmfloorz; }
     else if (thing.z + thing.height > tmceilingz) thing.z = tmceilingz - thing.height;
@@ -2248,9 +2254,12 @@
   function P_ExplodeMissile(mo) {
     mo.momx = mo.momy = mo.momz = 0;
     P_SetMobjState(mo, mo.info.deathstate);
+    // gospel p_mobj.c:96-104: tics roll and MF_MISSILE clear come FIRST,
+    // deathsound last.
     mo.tics -= P_Random() & 3;
     if (mo.tics < 1) mo.tics = 1;
     mo.flags &= ~MF_MISSILE;
+    if (mo.info.deathsound) S_StartSound(mo, mo.info.deathsound);
   }
 
   // P_XYMovement (p_mobj.c:114)
@@ -2265,13 +2274,16 @@
     var player = mo.player;
     if (mo.momx > MAXMOVE) mo.momx = MAXMOVE; else if (mo.momx < -MAXMOVE) mo.momx = -MAXMOVE;
     if (mo.momy > MAXMOVE) mo.momy = MAXMOVE; else if (mo.momy < -MAXMOVE) mo.momy = -MAXMOVE;
-    var x = mo.x, y = mo.y, xmove = mo.momx, ymove = mo.momy, ptryx, ptryy;
+    var xmove = mo.momx, ymove = mo.momy, ptryx, ptryy;
     do {
       if (xmove > MAXMOVE / 2 || ymove > MAXMOVE / 2) {   // ⚠ signed compare (p_mobj.c)
-        ptryx = (x + xmove / 2) | 0; ptryy = (y + ymove / 2) | 0;
+        // p_mobj.c:152-154: re-read mo->x/mo->y EVERY iteration — P_TryMove
+        // committed the previous half-step; caching pre-loop x/y made the
+        // second sub-step travel half the momentum.
+        ptryx = (mo.x + (xmove >> 1)) | 0; ptryy = (mo.y + (ymove >> 1)) | 0;
         xmove >>= 1; ymove >>= 1;
       } else {
-        ptryx = (x + xmove) | 0; ptryy = (y + ymove) | 0;
+        ptryx = (mo.x + xmove) | 0; ptryy = (mo.y + ymove) | 0;
         xmove = ymove = 0;
       }
       if (!P_TryMove(mo, ptryx, ptryy)) {
@@ -2283,7 +2295,7 @@
         } else mo.momx = mo.momy = 0;
       }
     } while (xmove || ymove);
-    if (player && (player.cheats & 64 /*CF_NOMOMENTUM*/)) { mo.momx = mo.momy = 0; return; }
+    if (player && (player.cheats & 4 /*CF_NOMOMENTUM, d_player.h*/)) { mo.momx = mo.momy = 0; return; }
     if (mo.flags & (MF_MISSILE | MF_SKULLFLY)) return;
     if (mo.z > mo.floorz) return;
     if (mo.flags & MF_CORPSE) {
@@ -2301,6 +2313,7 @@
       mo.momy = FixedMul(mo.momy, FRICTION);
     }
   }
+  G.P_XYMovement = P_XYMovement;
   // P_ZMovement (p_mobj.c)
   function P_ZMovement(mobj) {
     if (mobj.player && mobj.z < mobj.floorz) {
@@ -2461,13 +2474,18 @@
     var thing, thingtopslope, thingbottomslope, dist;
     if (inpt.isaline) {
       var li = inpt.d;
-      if (li.sidenum[1] === -1) { aimslope = 0; return false; }  // one-sided stops
+      if (!(li.flags & ML_TWOSIDED)) return false;        // stop (gospel: no aimslope reset)
       P_LineOpening(li);
+      if (openbottom >= opentop) return false;            // stop (p_map.c:837)
       dist = FixedMul(attackrange, inpt.frac);
-      var ts = FixedDiv(opentop - shootz, dist);
-      var bs = FixedDiv(openbottom - shootz, dist);
-      if (ts < topslope) topslope = ts;
-      if (bs > bottomslope) bottomslope = bs;
+      if (li.frontsector.floorheight !== li.backsector.floorheight) {
+        var bs = FixedDiv(openbottom - shootz, dist);
+        if (bs > bottomslope) bottomslope = bs;
+      }
+      if (li.frontsector.ceilingheight !== li.backsector.ceilingheight) {
+        var ts = FixedDiv(opentop - shootz, dist);
+        if (ts < topslope) topslope = ts;
+      }
       if (topslope <= bottomslope) return false;
       return true;
     }
@@ -2489,8 +2507,8 @@
     var x2 = (t1.x + (distance >> FRACBITS) * fcos(ang)) | 0;
     var y2 = (t1.y + (distance >> FRACBITS) * fsin(ang)) | 0;
     shootz = (t1.z + (t1.height >> 1) + 8 * FU) | 0;
-    topslope = slope + FU; bottomslope = slope - FU;       // p_map.c: narrow by ±1 FU? C: no
-    // C sets NOTHING here: PTR_ShootTraverse inits topslope/bottomslope from slope:
+    // gospel sets NO topslope/bottomslope here — PTR_ShootTraverse tests each
+    // line independently (the old ±FU window was invented).
     attackrange = distance;
     aimslope = slope;
     la_damage = damage;
@@ -2517,73 +2535,56 @@
     return th;
   }
   function PTR_ShootTraverse(inpt) {
-    var abovez, above, thing, thingtopslope, thingbottomslope, frac, x, y, z;
+    // Gospel p_map.c:899-1016. NO topslope/bottomslope window exists in C's
+    // shoot traverser — each two-sided line's opening is tested against
+    // aimslope INDEPENDENTLY; blocked => hitline (puff), else shot continues.
+    var li, frac, x, y, z, slope, dist, th, thingtopslope, thingbottomslope;
     if (inpt.isaline) {
-      var li = inpt.d;
-      if (li.special) P_ShootSpecialLine(shootthing, li);   // ⚠ fires both sides, any shooter
-      if (li.sidenum[1] === -1) {
-        // one-sided: sky hack check
-        var fsec = li.frontsector;
-        if (fsec.ceilingpic === G.skyflatnum) return false;
-        frac = inpt.frac - ((FixedDiv(4 * FU, attackrange)) | 0);
-        x = (shootthing.x + FixedMul(trace.dx, frac)) | 0;
-        y = (shootthing.y + FixedMul(trace.dy, frac)) | 0;
-        z = (shootz + FixedMul(aimslope, FixedMul(inpt.frac, attackrange))) | 0;
-        P_SpawnPuff(x, y, z);
-        return false;
-      }
-      // two-sided
-      P_LineOpening(li);
-      var dist = FixedMul(attackrange, inpt.frac);
-      var ts = FixedDiv(opentop - shootz, dist);
-      var bs = FixedDiv(openbottom - shootz, dist);
-      if (topslope > ts) topslope = ts;
-      if (bottomslope < bs) bottomslope = bs;
-      if (topslope <= bottomslope) {
-        var f2 = inpt.frac - ((FixedDiv(4 * FU, attackrange)) | 0);
-        x = (shootthing.x + FixedMul(trace.dx, f2)) | 0;
-        y = (shootthing.y + FixedMul(trace.dy, f2)) | 0;
-        z = (shootz + FixedMul(aimslope, FixedMul(inpt.frac, attackrange))) | 0;
-        // sky above? (C: continue if backsector ceiling is sky when slope hits top)
-        var bs2 = li.backsector;
-        if (bs2 && bs2.ceilingpic === G.skyflatnum && aimslope >= 0 &&
-          FixedDiv(bs2.ceilingheight - shootz, attackrange) <= aimslope) return false;
-        if (bs2 && bs2.ceilingpic === G.skyflatnum && (bs2.ceilingheight - shootz) > 0 &&
-          FixedDiv(bs2.ceilingheight - shootz, attackrange) > 0 && aimslope > 0 &&
-          FixedDiv(bs2.ceilingheight - shootz, attackrange) <= aimslope) return false;
-        P_SpawnPuff(x, y, z);
-        return false;
-      }
-      // can the shot pass above/below the opening? (C: slope outside opening entirely)
-      if (aimslope > topslope || aimslope < bottomslope) {
-        if (aimslope > 0 && li.backsector && li.backsector.ceilingpic === G.skyflatnum) return false;
-        if (aimslope < 0) { // hit floor side
-          var f3 = inpt.frac - ((FixedDiv(4 * FU, attackrange)) | 0);
-          x = (shootthing.x + FixedMul(trace.dx, f3)) | 0;
-          y = (shootthing.y + FixedMul(trace.dy, f3)) | 0;
-          z = (shootz + FixedMul(aimslope, FixedMul(inpt.frac, attackrange))) | 0;
-          P_SpawnPuff(x, y, z);
-          return false;
+      li = inpt.d;
+      if (li.special) P_ShootSpecialLine(shootthing, li);
+      var hitline = !(li.flags & ML_TWOSIDED);
+      if (!hitline) {
+        P_LineOpening(li);
+        dist = FixedMul(attackrange, inpt.frac);
+        if (li.frontsector.floorheight !== li.backsector.floorheight) {
+          slope = FixedDiv(openbottom - shootz, dist);
+          if (slope > aimslope) hitline = true;
         }
+        if (!hitline && li.frontsector.ceilingheight !== li.backsector.ceilingheight) {
+          slope = FixedDiv(opentop - shootz, dist);
+          if (slope < aimslope) hitline = true;
+        }
+        if (!hitline) return true;   // shot continues
       }
-      if (li.special === 0 && (li.flags & 1)) { /* ML_BLOCKING handled elsewhere */ }
-      return true;
+      // ---- hitline (p_map.c:951)
+      frac = (inpt.frac - FixedDiv(4 * FU, attackrange)) | 0;
+      x = (trace.x + FixedMul(trace.dx, frac)) | 0;
+      y = (trace.y + FixedMul(trace.dy, frac)) | 0;
+      z = (shootz + FixedMul(aimslope, FixedMul(frac, attackrange))) | 0;
+      if (li.frontsector.ceilingpic === G.skyflatnum) {
+        if (z > li.frontsector.ceilingheight) return false;      // don't shoot the sky!
+        if (li.backsector && li.backsector.ceilingpic === G.skyflatnum) return false; // sky hack
+      }
+      P_SpawnPuff(x, y, z);
+      return false;
     }
-    thing = inpt.d;
-    if (thing === shootthing) return true;
-    var d2 = FixedMul(attackrange, inpt.frac);
-    thingbottomslope = FixedDiv(thing.z - shootz, d2);
-    thingtopslope = FixedDiv(thing.z + thing.height - shootz, d2);
-    if (thingtopslope < aimslope) return true;
-    if (thingbottomslope > aimslope) return true;
-    if (!(thing.flags & MF_SHOOTABLE)) return true;
-    frac = inpt.frac - ((FixedDiv(10 * FU, attackrange)) | 0);
-    x = (shootthing.x + FixedMul(trace.dx, frac)) | 0;
-    y = (shootthing.y + FixedMul(trace.dy, frac)) | 0;
-    z = (shootz + FixedMul(aimslope, FixedMul(inpt.frac, attackrange))) | 0;
-    if (thing.flags & MF_NOBLOOD) P_SpawnPuff(x, y, z);
+    // shoot a thing (p_map.c:977)
+    th = inpt.d;
+    if (th === shootthing) return true;                 // can't shoot self
+    if (!(th.flags & MF_SHOOTABLE)) return true;        // corpse or something
+    dist = FixedMul(attackrange, inpt.frac);
+    thingtopslope = FixedDiv(th.z + th.height - shootz, dist);
+    if (thingtopslope < aimslope) return true;          // shot over the thing
+    thingbottomslope = FixedDiv(th.z - shootz, dist);
+    if (thingbottomslope > aimslope) return true;       // shot under the thing
+    // hit thing — position a bit closer
+    frac = (inpt.frac - FixedDiv(10 * FU, attackrange)) | 0;
+    x = (trace.x + FixedMul(trace.dx, frac)) | 0;
+    y = (trace.y + FixedMul(trace.dy, frac)) | 0;
+    z = (shootz + FixedMul(aimslope, FixedMul(frac, attackrange))) | 0;
+    if (th.flags & MF_NOBLOOD) P_SpawnPuff(x, y, z);
     else P_SpawnBlood(x, y, z, la_damage);
-    if (la_damage) P_DamageMobj(thing, shootthing, shootthing, la_damage);
+    if (la_damage) P_DamageMobj(th, shootthing, shootthing, la_damage);
     return false;
   }
   G.P_LineAttack = P_LineAttack; G.P_AimLineAttack = P_AimLineAttack;
@@ -2619,6 +2620,9 @@
   // P_RadiusAttack (p_map.c:1152) — Chebyshev falloff in whole units
   var bombspot = null, bombsource = null, bombdamage = 0;
   function PIT_RadiusAttack(thing) {
+    // gospel p_map.c:1175-1177: bosses are immune to splash (and each hit
+    // would burn P_DamageMobj pain rolls -> RNG divergence).
+    if (thing.type === MT_CYBORG || thing.type === MT_SPIDER) return true;
     if (!(thing.flags & MF_SHOOTABLE)) return true;
     var dx = Math.abs(thing.x - bombspot.x);
     var dy = Math.abs(thing.y - bombspot.y);
@@ -3955,10 +3959,12 @@
       if (!okp) return;
     }
     switch (line.special) {
+      // DEVIATION (dev-map only, NOT gospel): p_spec.c P_ShootSpecialLine has
+      // only cases 24/46/47. Special 2 is gospel W1 CROSS (P_CrossSpecialLine
+      // case 2), not a shoot response; map01.json's packer put it on a
+      // shootable one-sided switch, so the dev map needs this arm. Real WAD
+      // lines with special 2 get an extra shoot response vs vanilla.
       case 2:
-        // MAP01 quirk: the packer put W1-open (special 2) on the ONE-SIDED
-        // shoot switch (tag 2). C's EV_DoDoor(line,open) tags by tag — use the
-        // same tag path even without a backsector. Faithful to gen_map intent.
         EV_DoDoor(line, open);
         P_ChangeSwitchTexture(line, 0);
         line.special = 0;                                  // W1 = once
@@ -4179,7 +4185,7 @@
         player.message = MSG.SECRET;                       // DEVIATION (see MSG table)
         break;
       case 11:
-        player.cheats &= ~1;                               // CF_GODMODE off
+        player.cheats &= ~2;                               // CF_GODMODE off (d_player.h = 2)
         if (!(G.leveltime & 0x1f)) P_DamageMobj(player.mo, null, null, 20);
         if (player.health <= 10) G_ExitLevel();
         break;
@@ -4563,7 +4569,7 @@
     if (player) {
       if (target.subsector.sector.special === 11 && damage >= target.health)
         damage = target.health - 1;                          // end of game hell hack
-      if (damage < 1000 && ((player.cheats & 1) /*CF_GODMODE*/ || player.powers[pw_invulnerability]))
+      if (damage < 1000 && ((player.cheats & 2) /*CF_GODMODE, d_player.h*/ || player.powers[pw_invulnerability]))
         return;
       if (player.armortype) {
         var saved = player.armortype === 1 ? ((damage / 3) | 0) : ((damage / 2) | 0);
@@ -4860,6 +4866,9 @@
   }
   function P_SpawnMissile(source, dest, type) {
     var th = P_SpawnMobj(source.x, source.y, (source.z + 32 * FU) | 0, type);
+    // gospel p_mobj.c:902-903: seesound on the SPAWNED missile (launch sfx —
+    // for MT_CYBORG's rocket this is the ONLY sfx emission point).
+    if (th.info.seesound) S_StartSound(th, th.info.seesound);
     th.target = source;                                      // where it came from
     var an = G.R_PointToAngle2(source.x, source.y, dest.x, dest.y);
     if (dest.flags & MF_SHADOW)                              // fuzzy player
@@ -5867,7 +5876,7 @@
     player.bob = FixedMul(player.mo.momx, player.mo.momx) + FixedMul(player.mo.momy, player.mo.momy);
     player.bob >>= 2;
     if (player.bob > MAXBOB) player.bob = MAXBOB;
-    if ((player.cheats & 64) || !onground) {                  // CF_NOMOMENTUM
+    if ((player.cheats & 4) || !onground) {                   // CF_NOMOMENTUM (d_player.h = 4)
       player.viewz = (player.mo.z + VIEWHEIGHT) | 0;
       if (player.viewz > player.mo.ceilingz - 4 * FU) player.viewz = player.mo.ceilingz - 4 * FU;
       player.viewz = (player.mo.z + player.viewheight) | 0;   // ⚠ overwrites clamp — verbatim
@@ -5910,7 +5919,7 @@
   }
   function P_PlayerThink(player) {
     var cmd = player.cmd;
-    if (player.cheats & 2 /*CF_NOCLIP*/) player.mo.flags |= MF_NOCLIP;
+    if (player.cheats & 1 /*CF_NOCLIP, d_player.h*/) player.mo.flags |= MF_NOCLIP;
     else player.mo.flags &= ~MF_NOCLIP;
     if (player.mo.flags & MF_JUSTATTACKED) {                  // chainsaw auto-advance
       cmd.angleturn = 0; cmd.forwardmove = (0xc800 / 512) | 0; cmd.sidemove = 0;
@@ -6423,6 +6432,9 @@
   G.P_MobjThinker = P_MobjThinker;
   G.P_ThingHeightClip = P_ThingHeightClip;
   G.P_ExplodeMissile = P_ExplodeMissile;
+  G.P_SpawnMissile = P_SpawnMissile;
+  G.PIT_RadiusAttack = function (t) { return PIT_RadiusAttack(t); };
+  G.setBombspot = function (spot, src, dmg) { bombspot = spot; bombsource = src; bombdamage = dmg; };
   G.P_Thrust = P_Thrust;
   G.playerstarts = playerstarts;
   G.PIT_CheckLine = PIT_CheckLine;   // exported for tests

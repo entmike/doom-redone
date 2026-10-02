@@ -135,7 +135,7 @@
   var ST_GODFACE = ST_NUMPAINFACES * ST_FACESTRIDE, ST_DEADFACE = ST_GODFACE + 1;
   var ST_EVILGRINCOUNT = 2 * 35, ST_STRAIGHTFACECOUNT = 35 / 2 | 0,
       ST_TURNCOUNT = 35, ST_RAMPAGEDELAY = 2 * 35, ST_MUCHPAIN = 20;
-  var CF_GODMODE = 16, pw_invulnerability = 0, NUMWEAPONS = 9, NUMCARDS = 6;
+  var CF_GODMODE = 2, pw_invulnerability = 0, NUMWEAPONS = 9, NUMCARDS = 6;  // d_player.h:73
 
   // ---- face state machine (ST_updateFaceWidget, verbatim) ----------------
   var st_faceindex = 0, st_facecount = 0, st_randomnumber = 0;

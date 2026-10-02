@@ -571,7 +571,7 @@ function fallbackCopy(text, done) {
   const $ = id => document.getElementById(id);
   const p = () => G.players[G.consoleplayer || 0];
   const live = () => p() && p().mo;
-  const CF_GODMODE = 1, CF_NOCLIP = 2;
+  const CF_NOCLIP = 1, CF_GODMODE = 2;                     // d_player.h:71-75
 
   // cht_CheckCheat bodies need nothing here — buttons ARE the resolved seq.
   function refresh() {
